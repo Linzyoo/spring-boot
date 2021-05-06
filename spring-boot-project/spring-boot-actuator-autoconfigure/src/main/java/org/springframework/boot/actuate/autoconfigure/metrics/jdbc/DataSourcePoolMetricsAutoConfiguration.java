@@ -30,9 +30,12 @@ import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.jetbrains.annotations.NotNull;
 
+import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration;
 import org.springframework.boot.actuate.metrics.jdbc.DataSourcePoolMetrics;
@@ -43,6 +46,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.jdbc.DataSourceUnwrapper;
 import org.springframework.boot.jdbc.metadata.DataSourcePoolMetadataProvider;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.log.LogMessage;
 import org.springframework.util.StringUtils;
@@ -85,6 +90,7 @@ public class DataSourcePoolMetricsAutoConfiguration {
 
 		/**
 		 * Get the name of a DataSource based on its {@code beanName}.
+		 *
 		 * @param beanName the name of the data source bean
 		 * @return a name for the given data source
 		 */
@@ -104,34 +110,43 @@ public class DataSourcePoolMetricsAutoConfiguration {
 
 		private static final Log logger = LogFactory.getLog(HikariDataSourceMetricsConfiguration.class);
 
-		private final MeterRegistry registry;
-
-		HikariDataSourceMetricsConfiguration(MeterRegistry registry) {
-			this.registry = registry;
-		}
-
+		@Bean
 		@Autowired
-		void bindMetricsRegistryToHikariDataSources(Collection<DataSource> dataSources) {
-			for (DataSource dataSource : dataSources) {
-				HikariDataSource hikariDataSource = DataSourceUnwrapper.unwrap(dataSource, HikariConfigMXBean.class,
-						HikariDataSource.class);
-				if (hikariDataSource != null) {
-					bindMetricsRegistryToHikariDataSource(hikariDataSource);
+		public static HikariDataSourceBeanPostProcessor hikariDataSourceBeanPostProcessor(ApplicationContext applicationContext) {
+			return new HikariDataSourceBeanPostProcessor(applicationContext);
+		}
+
+		static class HikariDataSourceBeanPostProcessor implements BeanPostProcessor {
+			private final ApplicationContext context;
+
+			HikariDataSourceBeanPostProcessor(ApplicationContext applicationContext) {
+				this.context = applicationContext;
+			}
+
+			@Override
+			public Object postProcessAfterInitialization(@NotNull Object bean, @NotNull String beanName) throws BeansException {
+				if (bean instanceof DataSource) {
+					DataSource dataSource = (DataSource) bean;
+					HikariDataSource hikariDataSource = DataSourceUnwrapper.unwrap(dataSource, HikariConfigMXBean.class,
+							HikariDataSource.class);
+					if (hikariDataSource != null) {
+						bindMetricsRegistryToHikariDataSource(hikariDataSource);
+					}
+				}
+				return bean;
+			}
+
+			private void bindMetricsRegistryToHikariDataSource(HikariDataSource hikari) {
+				if (hikari.getMetricRegistry() == null && hikari.getMetricsTrackerFactory() == null) {
+					try {
+						MeterRegistry meterRegistry = context.getBean(MeterRegistry.class);
+						hikari.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(meterRegistry));
+					}
+					catch (Exception ex) {
+						logger.warn(LogMessage.format("Failed to bind Hikari metrics: %s", ex.getMessage()));
+					}
 				}
 			}
 		}
-
-		private void bindMetricsRegistryToHikariDataSource(HikariDataSource hikari) {
-			if (hikari.getMetricRegistry() == null && hikari.getMetricsTrackerFactory() == null) {
-				try {
-					hikari.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(this.registry));
-				}
-				catch (Exception ex) {
-					logger.warn(LogMessage.format("Failed to bind Hikari metrics: %s", ex.getMessage()));
-				}
-			}
-		}
-
 	}
-
 }
