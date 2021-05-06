@@ -104,32 +104,43 @@ public class DataSourcePoolMetricsAutoConfiguration {
 
 		private static final Log logger = LogFactory.getLog(HikariDataSourceMetricsConfiguration.class);
 
-		private final MeterRegistry registry;
-
-		HikariDataSourceMetricsConfiguration(MeterRegistry registry) {
-			this.registry = registry;
-		}
-
+		@Bean
 		@Autowired
-		void bindMetricsRegistryToHikariDataSources(Collection<DataSource> dataSources) {
-			for (DataSource dataSource : dataSources) {
-				HikariDataSource hikariDataSource = DataSourceUnwrapper.unwrap(dataSource, HikariConfigMXBean.class,
-						HikariDataSource.class);
-				if (hikariDataSource != null) {
-					bindMetricsRegistryToHikariDataSource(hikariDataSource);
-				}
-			}
+		public static HikariDataSourceBeanPostProcessor hikariDataSourceBeanPostProcessor(ApplicationContext applicationContext){
+			return new HikariDataSourceBeanPostProcessor(applicationContext);
 		}
 
-		private void bindMetricsRegistryToHikariDataSource(HikariDataSource hikari) {
-			if (hikari.getMetricRegistry() == null && hikari.getMetricsTrackerFactory() == null) {
-				try {
-					hikari.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(this.registry));
+		static class HikariDataSourceBeanPostProcessor implements BeanPostProcessor {
+			private final ApplicationContext context;
+			HikariDataSourceBeanPostProcessor(ApplicationContext applicationContext){
+				this.context = applicationContext;
+			}
+
+			@Override
+			public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+				if (bean instanceof DataSource){
+					DataSource dataSource = (DataSource)bean;
+					HikariDataSource hikariDataSource = DataSourceUnwrapper.unwrap(dataSource, HikariConfigMXBean.class,
+							HikariDataSource.class);
+					if (hikariDataSource != null) {
+						bindMetricsRegistryToHikariDataSource(hikariDataSource);
+					}
 				}
-				catch (Exception ex) {
-					logger.warn(LogMessage.format("Failed to bind Hikari metrics: %s", ex.getMessage()));
+				return bean;
+			}
+
+			private void bindMetricsRegistryToHikariDataSource(HikariDataSource hikari) {
+				if (hikari.getMetricRegistry() == null && hikari.getMetricsTrackerFactory() == null) {
+					try {
+						MeterRegistry meterRegistry = context.getBean(MeterRegistry.class);
+						hikari.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(meterRegistry));
+					}
+					catch (Exception ex) {
+						logger.warn(LogMessage.format("Failed to bind Hikari metrics: %s", ex.getMessage()));
+					}
 				}
 			}
+
 		}
 
 	}
